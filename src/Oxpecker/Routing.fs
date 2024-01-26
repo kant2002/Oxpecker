@@ -283,11 +283,12 @@ type EndpointRouteBuilderExtensions() =
             metadata: Metadata
         ) =
         match verb with
-        | Any -> builder.Map(routeTemplate, requestDelegate).WithMetadata(metadata)
+        | Any ->
+            builder.Map(routeTemplate, requestDelegate).WithMetadata(metadata |> Seq.toArray)
         | _ ->
             builder
                 .MapMethods(routeTemplate, [| verb.ToString() |], requestDelegate)
-                .WithMetadata(metadata)
+                .WithMetadata(metadata |> Seq.toArray)
         |> ignore
 
     [<Extension>]
