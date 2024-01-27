@@ -29,6 +29,7 @@ let hellloWorldOpenApiSchema =
         Tags = ResizeArray([
            OpenApiTag(Name="OpenApiFsharp")
         ]),
+        OperationId = "HelloWorld",
         // Parameters = GetOpenApiParameters(methodInfo, pattern, disableInferredBody),
         // RequestBody = GetOpenApiRequestBody(methodInfo, metadata, pattern, disableInferredBody),
         Responses =
