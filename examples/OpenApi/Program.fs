@@ -43,10 +43,29 @@ let hellloWorldOpenApiSchema =
             ])
     )
 
+let summaries = [
+    "Freezing"; "Bracing"; "Chilly"; "Cool"; "Mild"; "Warm"; "Balmy"; "Hot"; "Sweltering"; "Scorching"
+]
+
+type WeatherForecast = {
+    Date: DateTime
+    TemperatureC: int
+    Summary: string
+} with
+    member this.TemperatureF = 32 +  int (float this.TemperatureC / 0.5556)
 
 let endpoints = [
     GET [
         route "/" (text "Hello World") |> addMetadata hellloWorldOpenApiSchema
+        routef "/weatherforecast/{%i}" (fun num ->
+                [| 1.. num |]
+                 |> Array.map (fun i -> {
+                         Date= DateTime.Now.AddDays(i)
+                         TemperatureC  = Random.Shared.Next(-20, 55)
+                         Summary = summaries[Random.Shared.Next(summaries.Length)]
+                     })
+                 |> json
+             )
     ]
 ]
 
