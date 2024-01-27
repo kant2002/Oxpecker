@@ -17,22 +17,29 @@ open Oxpecker.ViewEngine
 open type Microsoft.AspNetCore.Http.TypedResults
 
 
+type OpenApiResponses with
+    static member Init(responses: (string*OpenApiResponse) seq) =
+        let obj = OpenApiResponses()
+        for code, response in responses do
+            obj.Add(code, response)
+        obj
+
 let hellloWorldOpenApiSchema =
-    let responses = OpenApiResponses()
-    let response = OpenApiResponse()
-    response.Content["text/plain; charset=utf-8"] <- OpenApiMediaType(
-        Schema = OpenApiSchema(Type = "string", Format = "text")
-    )
-    response.Description <- string HttpStatusCode.OK
-    responses["200"] <- response
     OpenApiOperation(
-        OperationId = "Hello World",
-        Summary = "Hello world OpenApi example",
-        Description = "Oxpecker open api integration",
-        // Tags = GetOperationTags(methodInfo, metadata),
+        Tags = ResizeArray([
+           OpenApiTag(Name="OpenApiFsharp")
+        ]),
         // Parameters = GetOpenApiParameters(methodInfo, pattern, disableInferredBody),
         // RequestBody = GetOpenApiRequestBody(methodInfo, metadata, pattern, disableInferredBody),
-        Responses = responses
+        Responses =
+            OpenApiResponses.Init([
+                ("200", OpenApiResponse(
+                    Description = "OK",
+                    Content = dict [
+                        "text/plain", OpenApiMediaType(Schema = OpenApiSchema(Type = "string"))
+                    ]
+                ))
+            ])
     )
 
 
@@ -90,9 +97,13 @@ let swagger (ctx: HttpContext) (next: RequestDelegate) =
     task {
         if (ctx.Request.Path = "/swagger.json") then
             let endpointsDataSource = ctx.RequestServices.GetService<EndpointDataSource>()
-            let result = OpenApiDocument()
-            result.Servers.Add(OpenApiServer(Url = $"{ctx.Request.Scheme}://{ctx.Request.Host}"))
-
+            let result = OpenApiDocument(
+                Info = OpenApiInfo(
+                    Title = "OpenApiFsharp",
+                    Version = "1.0"
+                ),
+                Paths = OpenApiPaths()
+            )
             let paths =
                 endpointsDataSource.Endpoints
                 |> Seq.map (fun ep -> ep :?> RouteEndpoint)
@@ -104,7 +115,6 @@ let swagger (ctx: HttpContext) (next: RequestDelegate) =
                         pathItem.Operations[getOperationType httpMethod] <- operation
                     ep.RoutePattern.RawText, pathItem)
                 |> Seq.toArray
-            result.Paths <- OpenApiPaths()
             for path, pathItem in paths do
                 result.Paths[path] <- pathItem
 
