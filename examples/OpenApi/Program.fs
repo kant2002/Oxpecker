@@ -24,14 +24,10 @@ type OpenApiResponses with
             obj.Add(code, response)
         obj
 
-let hellloWorldOpenApiSchema =
+let hellloWorldSchema =
     OpenApiOperation(
-        Tags = ResizeArray([
-           OpenApiTag(Name="OpenApiFsharp")
-        ]),
+        Tags = ResizeArray [ OpenApiTag(Name="OpenApiFsharp") ],
         OperationId = "HelloWorld",
-        // Parameters = GetOpenApiParameters(methodInfo, pattern, disableInferredBody),
-        // RequestBody = GetOpenApiRequestBody(methodInfo, metadata, pattern, disableInferredBody),
         Responses =
             OpenApiResponses.Init([
                 ("200", OpenApiResponse(
@@ -54,9 +50,39 @@ type WeatherForecast = {
 } with
     member this.TemperatureF = 32 +  int (float this.TemperatureC / 0.5556)
 
+let weatherForecastSchema =
+    OpenApiOperation(
+        Tags = ResizeArray [ OpenApiTag(Name="OpenApiFsharp") ],
+        OperationId = "GetWeatherForecast",
+        Parameters = ResizeArray [
+            OpenApiParameter(
+                Name = "num",
+                In = ParameterLocation.Path,
+                Required = true,
+                Style = ParameterStyle.Simple,
+                Schema = OpenApiSchema(Type = "integer", Format = "int32")
+            )
+        ],
+        Responses =
+            OpenApiResponses.Init([
+                ("200", OpenApiResponse(
+                    Description = "OK",
+                    Content = dict [
+                        "application/json", OpenApiMediaType(Schema = OpenApiSchema(
+                            Type = "array",
+                            Items = OpenApiSchema(Reference = OpenApiReference(
+                                Type = ReferenceType.Schema,
+                                Id = "WeatherForecast"
+                            ))
+                        ))
+                    ]
+                ))
+            ])
+    )
+
 let endpoints = [
     GET [
-        route "/" (text "Hello World") |> addMetadata hellloWorldOpenApiSchema
+        route "/" (text "Hello World") |> addMetadata hellloWorldSchema
         routef "/weatherforecast/{%i}" (fun num ->
                 [| 1.. num |]
                  |> Array.map (fun i -> {
@@ -65,7 +91,7 @@ let endpoints = [
                          Summary = summaries[Random.Shared.Next(summaries.Length)]
                      })
                  |> json
-             )
+             ) |> addMetadata weatherForecastSchema
     ]
 ]
 
@@ -122,7 +148,15 @@ let swagger (ctx: HttpContext) (next: RequestDelegate) =
                     Title = "OpenApiFsharp",
                     Version = "1.0"
                 ),
-                Paths = OpenApiPaths()
+                Paths = OpenApiPaths(),
+                Components = OpenApiComponents(Schemas = dict [
+                    "WeatherForecast", OpenApiSchema(Type = "object", Properties = dict [
+                        "date", OpenApiSchema(Type = "string", Format = "date-time")
+                        "temperatureC", OpenApiSchema(Type = "integer", Format = "int32")
+                        "summary", OpenApiSchema(Type = "string", Nullable = true)
+                        "temperatureF", OpenApiSchema(Type = "integer", Format = "int32", ReadOnly = true)
+                    ], AdditionalPropertiesAllowed = false)
+                ])
             )
             let paths =
                 endpointsDataSource.Endpoints
@@ -133,7 +167,7 @@ let swagger (ctx: HttpContext) (next: RequestDelegate) =
                     let operation = ep.Metadata.GetMetadata<OpenApiOperation>()
                     for httpMethod in httpMethodMetadata.HttpMethods do
                         pathItem.Operations[getOperationType httpMethod] <- operation
-                    ep.RoutePattern.RawText, pathItem)
+                    ep.RoutePattern.RawText.Replace("i0", "num"), pathItem)
                 |> Seq.toArray
             for path, pathItem in paths do
                 result.Paths[path] <- pathItem
