@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -24,7 +25,7 @@ var summaries = new[]
 app.MapGet("/", () => "Hello World!")
     .WithName("HelloWorld")
     .WithOpenApi();
-app.MapGet("/weatherforecast/{num:int}", (int num) =>
+app.MapGroup("/{city}").MapGet("/weatherforecast/{num:int}", (int num) =>
     {
         var forecast = Enumerable.Range(1, num).Select(index =>
                 new WeatherForecast

@@ -56,6 +56,13 @@ let weatherForecastSchema =
         OperationId = "GetWeatherForecast",
         Parameters = ResizeArray [
             OpenApiParameter(
+                Name = "city",
+                In = ParameterLocation.Path,
+                Required = true,
+                Style = ParameterStyle.Simple,
+                Schema = OpenApiSchema(Type = "string")
+            )
+            OpenApiParameter(
                 Name = "num",
                 In = ParameterLocation.Path,
                 Required = true,
@@ -83,7 +90,8 @@ let weatherForecastSchema =
 let endpoints = [
     GET [
         route "/" (text "Hello World") |> addMetadata hellloWorldSchema
-        routef "/weatherforecast/{%i}" (fun num ->
+        subRoute "/{city}" [
+            routef "/weatherforecast/{%i}" (fun num ->
                 [| 1.. num |]
                  |> Array.map (fun i -> {
                          Date= DateTime.Now.AddDays(i)
@@ -92,6 +100,7 @@ let endpoints = [
                      })
                  |> json
              ) |> addMetadata weatherForecastSchema
+        ]
     ]
 ]
 
@@ -167,7 +176,15 @@ let swagger (ctx: HttpContext) (next: RequestDelegate) =
                     let operation = ep.Metadata.GetMetadata<OpenApiOperation>()
                     for httpMethod in httpMethodMetadata.HttpMethods do
                         pathItem.Operations[getOperationType httpMethod] <- operation
-                    ep.RoutePattern.RawText.Replace("i0", "num"), pathItem)
+                    let declaredParameters =
+                        operation.Parameters
+                        |> Seq.filter (fun p -> p.In = Nullable(ParameterLocation.Path))
+                    let routeParameters =
+                        ep.RoutePattern.Parameters
+                    let mutable mutableFinalPath = ep.RoutePattern.RawText
+                    for declaredParameter, routeParameter in Seq.zip declaredParameters routeParameters do
+                        mutableFinalPath <- mutableFinalPath.Replace(routeParameter.Name, declaredParameter.Name)
+                    mutableFinalPath, pathItem)
                 |> Seq.toArray
             for path, pathItem in paths do
                 result.Paths[path] <- pathItem
