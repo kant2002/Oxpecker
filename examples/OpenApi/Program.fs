@@ -50,43 +50,6 @@ type WeatherForecast = {
 } with
     member this.TemperatureF = 32 +  int (float this.TemperatureC / 0.5556)
 
-let weatherForecastSchema =
-    OpenApiOperation(
-        Tags = ResizeArray [ OpenApiTag(Name="OpenApiFsharp") ],
-        OperationId = "GetWeatherForecast",
-        Parameters = ResizeArray [
-            OpenApiParameter(
-                Name = "city",
-                In = ParameterLocation.Path,
-                Required = true,
-                Style = ParameterStyle.Simple,
-                Schema = OpenApiSchema(Type = "string")
-            )
-            OpenApiParameter(
-                Name = "num",
-                In = ParameterLocation.Path,
-                Required = true,
-                Style = ParameterStyle.Simple,
-                Schema = OpenApiSchema(Type = "integer", Format = "int32")
-            )
-        ],
-        Responses =
-            OpenApiResponses.Init([
-                ("200", OpenApiResponse(
-                    Description = "OK",
-                    Content = dict [
-                        "application/json", OpenApiMediaType(Schema = OpenApiSchema(
-                            Type = "array",
-                            Items = OpenApiSchema(Reference = OpenApiReference(
-                                Type = ReferenceType.Schema,
-                                Id = "WeatherForecast"
-                            ))
-                        ))
-                    ]
-                ))
-            ])
-    )
-
 let endpoints = [
     GET [
         route "/" (text "Hello World") |> addMetadata hellloWorldSchema
@@ -99,7 +62,7 @@ let endpoints = [
                          Summary = summaries[Random.Shared.Next(summaries.Length)]
                      })
                  |> json
-             ) |> addMetadata weatherForecastSchema
+             ) |> addOpenApi<WeatherForecast[]> (fun o -> o.OperationId <- "GetWeatherForecast"; o)
         ]
     ]
 ]
@@ -138,71 +101,12 @@ let errorHandler (ctx: HttpContext) (next: RequestDelegate) =
     }
     :> Task
 
-let getOperationType = function
-    | "GET" -> OperationType.Get
-    | "POST" -> OperationType.Post
-    | "PUT" -> OperationType.Put
-    | "DELETE" -> OperationType.Delete
-    | "PATCH" -> OperationType.Patch
-    | "HEAD" -> OperationType.Head
-    | "OPTIONS" -> OperationType.Options
-    | _ -> failwith "Unknown operation type"
-
-let swagger (ctx: HttpContext) (next: RequestDelegate) =
-    task {
-        if (ctx.Request.Path = "/swagger.json") then
-            let endpointsDataSource = ctx.RequestServices.GetService<EndpointDataSource>()
-            let result = OpenApiDocument(
-                Info = OpenApiInfo(
-                    Title = "OpenApiFsharp",
-                    Version = "1.0"
-                ),
-                Paths = OpenApiPaths(),
-                Components = OpenApiComponents(Schemas = dict [
-                    "WeatherForecast", OpenApiSchema(Type = "object", Properties = dict [
-                        "date", OpenApiSchema(Type = "string", Format = "date-time")
-                        "temperatureC", OpenApiSchema(Type = "integer", Format = "int32")
-                        "summary", OpenApiSchema(Type = "string", Nullable = true)
-                        "temperatureF", OpenApiSchema(Type = "integer", Format = "int32", ReadOnly = true)
-                    ], AdditionalPropertiesAllowed = false)
-                ])
-            )
-            let paths =
-                endpointsDataSource.Endpoints
-                |> Seq.map (fun ep -> ep :?> RouteEndpoint)
-                |> Seq.map (fun ep ->
-                    let pathItem = OpenApiPathItem()
-                    let httpMethodMetadata = ep.Metadata.GetMetadata<HttpMethodMetadata>()
-                    let operation = ep.Metadata.GetMetadata<OpenApiOperation>()
-                    for httpMethod in httpMethodMetadata.HttpMethods do
-                        pathItem.Operations[getOperationType httpMethod] <- operation
-                    let declaredParameters =
-                        operation.Parameters
-                        |> Seq.filter (fun p -> p.In = Nullable(ParameterLocation.Path))
-                    let routeParameters =
-                        ep.RoutePattern.Parameters
-                    let mutable mutableFinalPath = ep.RoutePattern.RawText
-                    for declaredParameter, routeParameter in Seq.zip declaredParameters routeParameters do
-                        mutableFinalPath <- mutableFinalPath.Replace(routeParameter.Name, declaredParameter.Name)
-                    mutableFinalPath, pathItem)
-                |> Seq.toArray
-            for path, pathItem in paths do
-                result.Paths[path] <- pathItem
-
-            use textWriter = new StringWriter(CultureInfo.InvariantCulture)
-            let jsonWriter = OpenApiJsonWriter(textWriter)
-            result.SerializeAsV3(jsonWriter)
-            return! text (string textWriter) ctx
-        else
-            return! next.Invoke(ctx)
-    } :> Task
-
 let configureApp (appBuilder: IApplicationBuilder) =
     appBuilder
         .UseRouting()
         .Use(errorHandler)
         .UseOxpecker(endpoints)
-        .Use(swagger)
+        .UseSwagger()
         .Run(notFoundHandler)
 
 let configureServices (services: IServiceCollection) =
@@ -210,6 +114,7 @@ let configureServices (services: IServiceCollection) =
         .AddRouting()
         .AddOxpecker()
         .AddEndpointsApiExplorer()
+        .AddSwaggerGen()
         .AddSingleton<ILogger>(fun sp ->
             sp.GetRequiredService<ILoggerFactory>().CreateLogger("Oxpecker.Examples.OpenApi"))
     |> ignore
