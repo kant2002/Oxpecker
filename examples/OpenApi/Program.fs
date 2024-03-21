@@ -17,28 +17,6 @@ open Oxpecker.ViewEngine
 open type Microsoft.AspNetCore.Http.TypedResults
 
 
-type OpenApiResponses with
-    static member Init(responses: (string*OpenApiResponse) seq) =
-        let obj = OpenApiResponses()
-        for code, response in responses do
-            obj.Add(code, response)
-        obj
-
-let hellloWorldSchema =
-    OpenApiOperation(
-        Tags = ResizeArray [ OpenApiTag(Name="OpenApiFsharp") ],
-        OperationId = "HelloWorld",
-        Responses =
-            OpenApiResponses.Init([
-                ("200", OpenApiResponse(
-                    Description = "OK",
-                    Content = dict [
-                        "text/plain", OpenApiMediaType(Schema = OpenApiSchema(Type = "string"))
-                    ]
-                ))
-            ])
-    )
-
 let summaries = [
     "Freezing"; "Bracing"; "Chilly"; "Cool"; "Mild"; "Warm"; "Balmy"; "Hot"; "Sweltering"; "Scorching"
 ]
@@ -52,7 +30,8 @@ type WeatherForecast = {
 
 let endpoints = [
     GET [
-        route "/" (text "Hello World") |> configureEndpoint _.WithMetadata(hellloWorldSchema)
+        route "/" (text "Hello World")
+            |> addOpenApi<string> (fun o -> o.OperationId <- "GetHelloWorld"; o)
         subRoute "/{city}" [
             routef "/weatherforecast/{%i}" (fun num ->
                 [| 1.. num |]
@@ -63,8 +42,8 @@ let endpoints = [
                      })
                  |> json
              )
-            |> configureEndpoint _.WithMetadata(typeof<Func<WeatherForecast[]>>.GetMethod("Invoke"))
-            |> configureEndpoint _.WithOpenApi(fun o -> o.OperationId <- "GetWeatherForecast"; o)
+            |> configureEndpoint _.WithName("GetWeatherForecast")
+            |> addOpenApi<WeatherForecast[]> id
         ]
     ]
 ]

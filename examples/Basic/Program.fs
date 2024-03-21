@@ -134,7 +134,7 @@ let endpoints = [
     <| MY_HEADER(
         subRoute "/auth" [
             route "/open" handler1
-            route "/closed" handler1 |> configureEndpoint _.WithMetadata(RequiresAuditAttribute())
+            route "/closed" handler1 |> addMetadata(RequiresAuditAttribute())
         ]
     )
 

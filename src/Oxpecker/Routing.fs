@@ -4,7 +4,6 @@ open System
 open System.Net
 open System.Reflection
 open System.Runtime.CompilerServices
-open System.Text
 open System.Text.RegularExpressions
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
@@ -13,11 +12,6 @@ open Microsoft.AspNetCore.Builder
 open Microsoft.FSharp.Core
 open Microsoft.OpenApi.Models
 open Oxpecker
-
-open Microsoft.Extensions.DependencyInjection
-open Microsoft.Extensions.Hosting
-open Microsoft.AspNetCore.Builder
-open Microsoft.AspNetCore.Http
 
 [<AutoOpen>]
 module RoutingTypes =
@@ -59,6 +53,11 @@ module RoutingTypes =
 
 
 module RoutingInternal =
+    // This is a hack to prevent generating Func tag in open API
+    [<CompilerGenerated>]
+    type FakeFunc<'T> =
+        member this.Invoke() = Unchecked.defaultof<'T>
+
     type ApplyBefore =
         static member Compose(beforeHandler: EndpointHandler, endpoint: Endpoint) =
             match endpoint with
@@ -87,18 +86,18 @@ module private RouteTemplateBuilder =
     // This function should convert to route template and mappings
     // "api/{%s}/{%i}" -> ("api/{s0}/{i1}", [("s0", 's', None); ("i1", 'i', None)])
     // "api/{%O:guid}/{%s}" -> ("api/{s0:guid}", [("O0", 'O', Some "guid"); ("s1", 's', None)])
-    let convertToRouteTemplate (pathValue: string) =
+    let convertToRouteTemplate (pathValue: string) (parameters: ParameterInfo[]) =
         let placeholderPattern = Regex(@"\{%([sibcdfuO])(:[^}]+)?\}")
         let mutable index = 0
         let mappings = ResizeArray()
 
         let placeholderEvaluator = MatchEvaluator(fun m ->
-            let vtype = m.Groups.[1].Value.[0] // First capture group is the variable type s, i, or O
-            let formatSpecifier = if m.Groups.[2].Success then m.Groups.[2].Value else ""
-            let placeholderIndex = index // Use shared index
+            let vtype = m.Groups[1].Value[0] // First capture group is the variable type s, i, or O
+            let formatSpecifier = if m.Groups[2].Success then m.Groups[2].Value else ""
+            let paramName = parameters[index].Name
             index <- index + 1 // Increment index for next use
-            mappings.Add(( $"%c{vtype}%d{placeholderIndex}", vtype, if formatSpecifier = "" then None else (Some <| formatSpecifier.TrimStart(':'))))
-            $"{{{vtype}{placeholderIndex}{formatSpecifier}}}" // Construct the new placeholder
+            mappings.Add((paramName, vtype, if formatSpecifier = "" then None else (Some <| formatSpecifier.TrimStart(':'))))
+            $"{{{paramName}{formatSpecifier}}}" // Construct the new placeholder
         )
 
         let newRoute = placeholderPattern.Replace(pathValue, placeholderEvaluator)
@@ -224,6 +223,7 @@ module Routers =
         (methodInfo: MethodInfo)
         (handler: 'T)
         (mappings: (string * char * Option<_>) array)
+        (parameters: ParameterInfo array)
         =
         let routeData = ctx.GetRouteData()
         let mappingArguments =
@@ -240,7 +240,7 @@ module Routers =
                             <| RouteParseException($"Url segment value '%s{routeValue}' has invalid format", ex)
                     | None -> routeValue
             }
-        let paramCount = methodInfo.GetParameters().Length
+        let paramCount = parameters.Length
         if paramCount = mappings.Length + 1 then
             methodInfo.Invoke(handler, [| yield! mappingArguments; ctx |]) :?> Task
         elif paramCount = mappings.Length then
@@ -253,10 +253,11 @@ module Routers =
     let routef (path: PrintfFormat<'T, unit, unit, EndpointHandler>) (routeHandler: 'T) : Endpoint =
         let handlerType = routeHandler.GetType()
         let handlerMethod = handlerType.GetMethods()[0]
-        let template, mappings = RouteTemplateBuilder.convertToRouteTemplate path.Value
+        let parameters = handlerMethod.GetParameters()
+        let template, mappings = RouteTemplateBuilder.convertToRouteTemplate path.Value parameters
 
         let requestDelegate =
-            fun (ctx: HttpContext) -> invokeHandler<'T> ctx handlerMethod routeHandler mappings
+            fun (ctx: HttpContext) -> invokeHandler<'T> ctx handlerMethod routeHandler mappings parameters
 
         let configureEndpoint =
             fun (endpoint: IEndpointConventionBuilder)->
@@ -292,8 +293,6 @@ module Routers =
             NestedEndpoint(template, Seq.map (applyAfter afterHandler) endpoints, configureEndpoint)
         | MultiEndpoint endpoints -> MultiEndpoint(Seq.map (applyAfter afterHandler) endpoints)
 
-
-
     let rec configureEndpoint (f: ConfigureEndpoint) (endpoint: Endpoint) =
         match endpoint with
         | SimpleEndpoint(verb, template, handler, configureEndpoint) ->
@@ -312,7 +311,13 @@ module Routers =
         | MultiEndpoint endpoints ->
             MultiEndpoint(Seq.map (configureEndpoint f) endpoints)
 
+    let addMetadata (metadata: obj) =
+        configureEndpoint _.WithMetadata(metadata)
 
+    let addOpenApi<'T> (config: OpenApiConfig) =
+        configureEndpoint
+            _.WithMetadata(typeof<FakeFunc<'T>>.GetMethod("Invoke"))
+             .WithOpenApi(config)
 
 type EndpointRouteBuilderExtensions() =
 
