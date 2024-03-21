@@ -52,7 +52,7 @@ type WeatherForecast = {
 
 let endpoints = [
     GET [
-        route "/" (text "Hello World") |> addMetadata hellloWorldSchema
+        route "/" (text "Hello World") |> configureEndpoint _.WithMetadata(hellloWorldSchema)
         subRoute "/{city}" [
             routef "/weatherforecast/{%i}" (fun num ->
                 [| 1.. num |]
@@ -62,7 +62,9 @@ let endpoints = [
                          Summary = summaries[Random.Shared.Next(summaries.Length)]
                      })
                  |> json
-             ) |> addOpenApi<WeatherForecast[]> (fun o -> o.OperationId <- "GetWeatherForecast"; o)
+             )
+            |> configureEndpoint _.WithMetadata(typeof<Func<WeatherForecast[]>>.GetMethod("Invoke"))
+            |> configureEndpoint _.WithOpenApi(fun o -> o.OperationId <- "GetWeatherForecast"; o)
         ]
     ]
 ]

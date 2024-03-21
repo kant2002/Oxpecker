@@ -14,6 +14,11 @@ open Microsoft.FSharp.Core
 open Microsoft.OpenApi.Models
 open Oxpecker
 
+open Microsoft.Extensions.DependencyInjection
+open Microsoft.Extensions.Hosting
+open Microsoft.AspNetCore.Builder
+open Microsoft.AspNetCore.Http
+
 [<AutoOpen>]
 module RoutingTypes =
     type HttpVerb =
@@ -45,9 +50,11 @@ module RoutingTypes =
     type Metadata = obj seq
     type OpenApiConfig = OpenApiOperation -> OpenApiOperation
 
+    type ConfigureEndpoint = IEndpointConventionBuilder -> IEndpointConventionBuilder
+
     type Endpoint =
-        | SimpleEndpoint of HttpVerb * RouteTemplate * EndpointHandler * Metadata * OpenApiConfig
-        | NestedEndpoint of RouteTemplate * Endpoint seq * Metadata
+        | SimpleEndpoint of HttpVerb * RouteTemplate * EndpointHandler * ConfigureEndpoint
+        | NestedEndpoint of RouteTemplate * Endpoint seq * ConfigureEndpoint
         | MultiEndpoint of Endpoint seq
 
 
@@ -55,22 +62,22 @@ module RoutingInternal =
     type ApplyBefore =
         static member Compose(beforeHandler: EndpointHandler, endpoint: Endpoint) =
             match endpoint with
-            | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
-                SimpleEndpoint(verb, template, beforeHandler >=> handler, metadata, openApi)
-            | NestedEndpoint(template, endpoints, metadata) ->
-                NestedEndpoint(template, Seq.map (fun e -> ApplyBefore.Compose(beforeHandler, e)) endpoints, metadata)
+            | SimpleEndpoint(verb, template, handler, configureEndpoint) ->
+                SimpleEndpoint(verb, template, beforeHandler >=> handler, configureEndpoint)
+            | NestedEndpoint(template, endpoints, configureEndpoint) ->
+                NestedEndpoint(template, Seq.map (fun e -> ApplyBefore.Compose(beforeHandler, e)) endpoints, configureEndpoint)
             | MultiEndpoint endpoints ->
                 MultiEndpoint(Seq.map (fun e -> ApplyBefore.Compose(beforeHandler, e)) endpoints)
 
         static member Compose(beforeMiddleware: EndpointMiddleware, endpoint: Endpoint) =
             match endpoint with
-            | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
-                SimpleEndpoint(verb, template, beforeMiddleware >=> handler, metadata, openApi)
-            | NestedEndpoint(template, endpoints, metadata) ->
+            | SimpleEndpoint(verb, template, handler,configureEndpoint) ->
+                SimpleEndpoint(verb, template, beforeMiddleware >=> handler, configureEndpoint)
+            | NestedEndpoint(template, endpoints, configureEndpoint) ->
                 NestedEndpoint(
                     template,
                     Seq.map (fun e -> ApplyBefore.Compose(beforeMiddleware, e)) endpoints,
-                    metadata
+                    configureEndpoint
                 )
             | MultiEndpoint endpoints ->
                 MultiEndpoint(Seq.map (fun e -> ApplyBefore.Compose(beforeMiddleware, e)) endpoints)
@@ -81,7 +88,7 @@ module private RouteTemplateBuilder =
     // "api/{%s}/{%i}" -> ("api/{s0}/{i1}", [("s0", 's', None); ("i1", 'i', None)])
     // "api/{%O:guid}/{%s}" -> ("api/{s0:guid}", [("O0", 'O', Some "guid"); ("s1", 's', None)])
     let convertToRouteTemplate (pathValue: string) =
-        let placeholderPattern = Regex(@"\{%(s|i|O)(:[^}]+)?\}")
+        let placeholderPattern = Regex(@"\{%([sibcdfuO])(:[^}]+)?\}")
         let mutable index = 0
         let mappings = ResizeArray()
 
@@ -161,34 +168,34 @@ module Routers =
 
     let rec private applyHttpVerbToEndpoint (verb: HttpVerb) (endpoint: Endpoint) : Endpoint =
         match endpoint with
-        | SimpleEndpoint(_, template, handler, metadata, openApi) ->
-            SimpleEndpoint(verb, template, handler, metadata, openApi)
-        | NestedEndpoint(handler, endpoints, metadata) ->
-            NestedEndpoint(handler, endpoints |> Seq.map(applyHttpVerbToEndpoint verb), metadata)
+        | SimpleEndpoint(_, template, handler, configureEndpoint) ->
+            SimpleEndpoint(verb, template, handler, configureEndpoint)
+        | NestedEndpoint(handler, endpoints, configureEndpoint) ->
+            NestedEndpoint(handler, endpoints |> Seq.map(applyHttpVerbToEndpoint verb), configureEndpoint)
         | MultiEndpoint endpoints -> endpoints |> Seq.map(applyHttpVerbToEndpoint verb) |> MultiEndpoint
 
     let rec private applyHttpVerbToEndpoints (verb: HttpVerb) (endpoints: Endpoint seq) : Endpoint =
         endpoints
         |> Seq.map(fun endpoint ->
             match endpoint with
-            | SimpleEndpoint(_, template, handler, metadata, openApi) ->
-                SimpleEndpoint(verb, template, handler, metadata, openApi)
-            | NestedEndpoint(template, endpoints, metadata) ->
-                NestedEndpoint(template, endpoints |> Seq.map(applyHttpVerbToEndpoint verb), metadata)
+            | SimpleEndpoint(_, template, handler, configureEndpoint) ->
+                SimpleEndpoint(verb, template, handler, configureEndpoint)
+            | NestedEndpoint(template, endpoints, configureEndpoint) ->
+                NestedEndpoint(template, endpoints |> Seq.map(applyHttpVerbToEndpoint verb), configureEndpoint)
             | MultiEndpoint endpoints -> applyHttpVerbToEndpoints verb endpoints)
         |> MultiEndpoint
 
     let rec private applyHttpVerbsToEndpoints (verbs: HttpVerb seq) (endpoints: Endpoint seq) : Endpoint =
         endpoints
         |> Seq.map (function
-            | SimpleEndpoint(_, routeTemplate, requestDelegate, metadata, openApi) ->
+            | SimpleEndpoint(_, routeTemplate, requestDelegate, configureEndpoint) ->
                 verbs
-                |> Seq.map(fun verb -> SimpleEndpoint(verb, routeTemplate, requestDelegate, metadata, openApi))
+                |> Seq.map(fun verb -> SimpleEndpoint(verb, routeTemplate, requestDelegate, configureEndpoint))
                 |> MultiEndpoint
-            | NestedEndpoint(template, endpoints, metadata) ->
+            | NestedEndpoint(template, endpoints, configureEndpoint) ->
                 verbs
                 |> Seq.map(fun verb ->
-                    NestedEndpoint(template, endpoints |> Seq.map(applyHttpVerbToEndpoint verb), metadata))
+                    NestedEndpoint(template, endpoints |> Seq.map(applyHttpVerbToEndpoint verb), configureEndpoint))
                 |> MultiEndpoint
             | MultiEndpoint endpoints ->
                 verbs
@@ -209,7 +216,7 @@ module Routers =
     let CONNECT: Endpoint seq -> Endpoint = applyHttpVerbToEndpoints CONNECT
 
     let route (path: string) (handler: EndpointHandler) : Endpoint =
-        SimpleEndpoint(HttpVerb.Any, path, handler, Seq.empty, id)
+        SimpleEndpoint(HttpVerb.Any, path, handler, id)
 
 
     let private invokeHandler<'T>
@@ -251,76 +258,60 @@ module Routers =
         let requestDelegate =
             fun (ctx: HttpContext) -> invokeHandler<'T> ctx handlerMethod routeHandler mappings
 
-        let openApiConfig =
-            fun (operation: OpenApiOperation) ->
-                operation.Parameters <- ResizeArray (
-                    mappings |> Array.map (fun (name, format, modifier) ->
-                        OpenApiParameter(
-                            Name = name,
-                            In = ParameterLocation.Path,
-                            Required = true,
-                            Style = ParameterStyle.Simple,
-                            Schema = RequestDelegateBuilder.getSchema format modifier
+        let configureEndpoint =
+            fun (endpoint: IEndpointConventionBuilder)->
+                endpoint.WithOpenApi(
+                    fun (operation: OpenApiOperation) ->
+                        operation.Parameters <- ResizeArray (
+                            mappings |> Array.map (fun (name, format, modifier) ->
+                                OpenApiParameter(
+                                    Name = name,
+                                    In = ParameterLocation.Path,
+                                    Required = true,
+                                    Style = ParameterStyle.Simple,
+                                    Schema = RequestDelegateBuilder.getSchema format modifier
+                                )
+                            )
                         )
-                    )
+                        operation
                 )
-                operation
 
-        SimpleEndpoint(HttpVerb.Any, template, requestDelegate, Seq.empty, openApiConfig)
+        SimpleEndpoint(HttpVerb.Any, template, requestDelegate, configureEndpoint)
 
     let subRoute (path: string) (endpoints: Endpoint seq) : Endpoint =
-        NestedEndpoint(path, endpoints, Seq.empty)
-
+        NestedEndpoint(path, endpoints, id)
 
     let inline applyBefore (beforeHandler: 'T) (endpoint: Endpoint) =
         compose_opImpl Unchecked.defaultof<ApplyBefore> beforeHandler endpoint
 
     let rec applyAfter (afterHandler: EndpointHandler) (endpoint: Endpoint) =
         match endpoint with
-        | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
-            SimpleEndpoint(verb, template, handler >=> afterHandler, metadata, openApi)
-        | NestedEndpoint(template, endpoints, metadata) ->
-            NestedEndpoint(template, Seq.map (applyAfter afterHandler) endpoints, metadata)
+        | SimpleEndpoint(verb, template, handler, configureEndpoint) ->
+            SimpleEndpoint(verb, template, handler >=> afterHandler, configureEndpoint)
+        | NestedEndpoint(template, endpoints, configureEndpoint) ->
+            NestedEndpoint(template, Seq.map (applyAfter afterHandler) endpoints, configureEndpoint)
         | MultiEndpoint endpoints -> MultiEndpoint(Seq.map (applyAfter afterHandler) endpoints)
 
-    let rec addMetadata (newMetadata: obj) (endpoint: Endpoint) =
+
+
+    let rec configureEndpoint (f: ConfigureEndpoint) (endpoint: Endpoint) =
         match endpoint with
-        | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
+        | SimpleEndpoint(verb, template, handler, configureEndpoint) ->
             SimpleEndpoint(
                 verb,
                 template,
                 handler,
-                seq {
-                    yield! metadata
-                    newMetadata
-                }, openApi
+                configureEndpoint >> f
             )
-        | NestedEndpoint(template, endpoints, metadata) ->
+        | NestedEndpoint(template, endpoints, configureEndpoint) ->
             NestedEndpoint(
                 template,
                 endpoints,
-                seq {
-                    yield! metadata
-                    newMetadata
-                }
+                configureEndpoint >> f
             )
         | MultiEndpoint endpoints ->
-            MultiEndpoint(Seq.map (addMetadata newMetadata) endpoints)
+            MultiEndpoint(Seq.map (configureEndpoint f) endpoints)
 
-    let addOpenApi<'T> (f: OpenApiOperation -> OpenApiOperation) (endpoint: Endpoint) =
-        match endpoint with
-        | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
-            SimpleEndpoint(
-                verb,
-                template,
-                handler,
-                seq {
-                    yield! metadata
-                    typeof<Func<'T>>.GetMethod("Invoke")
-                },
-                openApi >> f
-            )
-        |  x -> x
 
 
 type EndpointRouteBuilderExtensions() =
@@ -332,20 +323,17 @@ type EndpointRouteBuilderExtensions() =
             verb: HttpVerb,
             routeTemplate: RouteTemplate,
             requestDelegate: RequestDelegate,
-            metadata: Metadata,
-            openApiConfig: OpenApiConfig
+            configureEndpoint: ConfigureEndpoint
         ) =
         match verb with
         | Any ->
             builder
                 .Map(routeTemplate, requestDelegate)
-                .WithMetadata(metadata |> Seq.toArray)
-                .WithOpenApi(openApiConfig)
+                |> configureEndpoint
         | _ ->
             builder
                 .MapMethods(routeTemplate, [| verb.ToString() |], requestDelegate)
-                .WithMetadata(metadata |> Seq.toArray)
-                .WithOpenApi(openApiConfig)
+                |> configureEndpoint
         |> ignore
 
     [<Extension>]
@@ -354,29 +342,23 @@ type EndpointRouteBuilderExtensions() =
             builder: IEndpointRouteBuilder,
             parentTemplate: RouteTemplate,
             endpoints: Endpoint seq,
-            parentMetadata: Metadata
+            parentConfigureEndpoint: ConfigureEndpoint
         ) =
         let groupBuilder = builder.MapGroup(parentTemplate)
         for endpoint in endpoints do
             match endpoint with
-            | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
+            | SimpleEndpoint(verb, template, handler, configureEndpoint) ->
                 groupBuilder.MapSingleEndpoint(
                     verb,
                     template,
                     handler,
-                    seq {
-                        yield! parentMetadata
-                        yield! metadata
-                    }, openApi
+                    parentConfigureEndpoint >> configureEndpoint
                 )
-            | NestedEndpoint(template, endpoints, metadata) ->
+            | NestedEndpoint(template, endpoints, configureEndpoint) ->
                 groupBuilder.MapNestedEndpoint(
                     template,
                     endpoints,
-                    seq {
-                        yield! parentMetadata
-                        yield! metadata
-                    }
+                    parentConfigureEndpoint >> configureEndpoint
                 )
             | MultiEndpoint endpoints -> groupBuilder.MapMultiEndpoint endpoints
 
@@ -384,17 +366,20 @@ type EndpointRouteBuilderExtensions() =
     static member private MapMultiEndpoint(builder: IEndpointRouteBuilder, endpoints: Endpoint seq) =
         for endpoint in endpoints do
             match endpoint with
-            | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
-                builder.MapSingleEndpoint(verb, template, handler, metadata, openApi)
-            | NestedEndpoint(template, endpoints, metadata) -> builder.MapNestedEndpoint(template, endpoints, metadata)
-            | MultiEndpoint endpoints -> builder.MapMultiEndpoint endpoints
+            | SimpleEndpoint(verb, template, handler, configureEndpoint) ->
+                builder.MapSingleEndpoint(verb, template, handler, configureEndpoint)
+            | NestedEndpoint(template, endpoints, configureEndpoint) ->
+                builder.MapNestedEndpoint(template, endpoints, configureEndpoint)
+            | MultiEndpoint endpoints ->
+                builder.MapMultiEndpoint endpoints
 
     [<Extension>]
     static member MapOxpeckerEndpoints(builder: IEndpointRouteBuilder, endpoints: Endpoint seq) =
 
         for endpoint in endpoints do
             match endpoint with
-            | SimpleEndpoint(verb, template, handler, metadata, openApi) ->
-                builder.MapSingleEndpoint(verb, template, handler, metadata, openApi)
-            | NestedEndpoint(template, endpoints, metadata) -> builder.MapNestedEndpoint(template, endpoints, metadata)
+            | SimpleEndpoint(verb, template, handler, configureEndpoint) ->
+                builder.MapSingleEndpoint(verb, template, handler, configureEndpoint)
+            | NestedEndpoint(template, endpoints, configureEndpoint) ->
+                builder.MapNestedEndpoint(template, endpoints, configureEndpoint)
             | MultiEndpoint endpoints -> builder.MapMultiEndpoint endpoints
