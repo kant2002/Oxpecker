@@ -34,9 +34,9 @@ let endpoints = [
         route "/" (text "Hello World")
             |> addOpenApi (OpenApiConfig(
                 requestInfo = RequestInfo(typeof<WeatherForecast>),
-                responseInfo = ResponseInfo(typeof<string>),
+                responseInfos = [| ResponseInfo(typeof<string>) |],
                 configureOperation = (fun o -> o.OperationId <- "HelloWorld"; o)
-            ))
+             ))
     ]
     GET [
         subRoute "/{city}" [

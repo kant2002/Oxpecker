@@ -48,34 +48,41 @@ module RoutingTypes =
     [<CompilerGenerated>]
     type FakeFunc<'T, 'U> =
         member this.Invoke(_: 'T) = Unchecked.defaultof<'U>
-        member this.InvokeUnit() = Unchecked.defaultof<'U>
+        member this.InvokeUnitReq() = Unchecked.defaultof<'U>
+        member this.InvokeUnitResp(_: 'T) = ()
+        member this.InvokeUnit() = ()
 
-    let fakeFuncMethod = typeof<FakeFunc<unit, unit>>.GetMethod("InvokeUnit")
+    let fakeFuncMethod = typeof<FakeFunc<_, _>>.GetMethod("InvokeUnit")
+    let unitType = typeof<unit>
 
-    type RequestInfo(?requestType: Type, ?contentType: string) =
-        let requestType = requestType |> Option.defaultValue typeof<unit>
-        let contentType = contentType |> Option.defaultValue "application/json"
+    type RequestInfo(?requestType: Type, ?contentTypes: string[], ?isOptional: bool) =
+        let requestType = requestType |> Option.defaultValue null
+        let contentTypes = contentTypes |> Option.defaultValue [| "application/json" |]
+        let isOptional = isOptional |> Option.defaultValue false
         member this.ToAttribute()=
-            AcceptsMetadata([|contentType|], requestType)
+            AcceptsMetadata(contentTypes, requestType, isOptional)
 
-    type ResponseInfo(?responseType: Type, ?contentType: string, ?statusCode: int) =
-        let responseType = responseType |> Option.defaultValue typeof<unit>
-        let contentTypes = contentType |> Option.map (fun ct ->  [|ct|]) |>  Option.defaultValue null
+    type ResponseInfo(?responseType: Type, ?contentTypes: string[], ?statusCode: int) =
+        let responseType = responseType |> Option.defaultValue null
+        let contentTypes = contentTypes |>  Option.defaultValue null
         let statusCode = statusCode |> Option.defaultValue 200
         member this.ToAttribute()=
             ProducesResponseTypeMetadata(statusCode, responseType, contentTypes)
 
 
     type OpenApiConfig (?requestInfo : RequestInfo,
-                        ?responseInfo : ResponseInfo,
+                        ?responseInfos : ResponseInfo seq,
                         ?configureOperation : OpenApiOperation -> OpenApiOperation) =
 
         member this.Build(builder: IEndpointConventionBuilder) =
             builder.WithMetadata(fakeFuncMethod) |> ignore
             requestInfo |> Option.iter (fun accepts -> builder.WithMetadata(accepts.ToAttribute()) |> ignore)
-            responseInfo |> Option.iter (fun produces -> builder.WithMetadata(produces.ToAttribute()) |> ignore)
-            let configure = configureOperation |> Option.defaultValue id
-            builder.WithOpenApi(configure)
+            responseInfos |> Option.iter (fun responseInfos ->
+                for produces in responseInfos do
+                    builder.WithMetadata(produces.ToAttribute()) |> ignore)
+            match configureOperation with
+            | Some configure -> builder.WithOpenApi(configure)
+            | None -> builder.WithOpenApi()
 
     type ConfigureEndpoint = IEndpointConventionBuilder -> IEndpointConventionBuilder
 
@@ -349,14 +356,14 @@ module Routers =
 
     let addOpenApiSimple<'Req, 'Res> =
         let methodName =
-            if typeof<'Req> = typeof<unit> then
-                "InvokeUnit"
-            else
-                "Invoke"
+            match typeof<'Req>, typeof<'Res> with
+            | reqType, respType when reqType = unitType && respType = unitType -> "InvokeUnit"
+            | reqType, _ when reqType = unitType -> "InvokeUnitReq"
+            | _, respType when respType = unitType -> "InvokeUnitResp"
+            | _, _ -> "Invoke"
         configureEndpoint
             _.WithMetadata(typeof<FakeFunc<'Req, 'Res>>.GetMethod(methodName))
              .WithOpenApi()
-
 
 
 type EndpointRouteBuilderExtensions() =
