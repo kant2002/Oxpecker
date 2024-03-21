@@ -7,6 +7,7 @@ open System.Runtime.CompilerServices
 open System.Text.RegularExpressions
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
+open Microsoft.AspNetCore.Http.Metadata
 open Microsoft.AspNetCore.Routing
 open Microsoft.AspNetCore.Builder
 open Microsoft.FSharp.Core
@@ -42,7 +43,39 @@ module RoutingTypes =
 
     type RouteTemplate = string
     type Metadata = obj seq
-    type OpenApiConfig = OpenApiOperation -> OpenApiOperation
+
+    // This is a hack to prevent generating Func tag in open API
+    [<CompilerGenerated>]
+    type FakeFunc<'T, 'U> =
+        member this.Invoke(_: 'T) = Unchecked.defaultof<'U>
+        member this.InvokeUnit() = Unchecked.defaultof<'U>
+
+    let fakeFuncMethod = typeof<FakeFunc<unit, unit>>.GetMethod("InvokeUnit")
+
+    type RequestInfo(?requestType: Type, ?contentType: string) =
+        let requestType = requestType |> Option.defaultValue typeof<unit>
+        let contentType = contentType |> Option.defaultValue "application/json"
+        member this.ToAttribute()=
+            AcceptsMetadata([|contentType|], requestType)
+
+    type ResponseInfo(?responseType: Type, ?contentType: string, ?statusCode: int) =
+        let responseType = responseType |> Option.defaultValue typeof<unit>
+        let contentTypes = contentType |> Option.map (fun ct ->  [|ct|]) |>  Option.defaultValue null
+        let statusCode = statusCode |> Option.defaultValue 200
+        member this.ToAttribute()=
+            ProducesResponseTypeMetadata(statusCode, responseType, contentTypes)
+
+
+    type OpenApiConfig (?requestInfo : RequestInfo,
+                        ?responseInfo : ResponseInfo,
+                        ?configureOperation : OpenApiOperation -> OpenApiOperation) =
+
+        member this.Build(builder: IEndpointConventionBuilder) =
+            builder.WithMetadata(fakeFuncMethod) |> ignore
+            requestInfo |> Option.iter (fun accepts -> builder.WithMetadata(accepts.ToAttribute()) |> ignore)
+            responseInfo |> Option.iter (fun produces -> builder.WithMetadata(produces.ToAttribute()) |> ignore)
+            let configure = configureOperation |> Option.defaultValue id
+            builder.WithOpenApi(configure)
 
     type ConfigureEndpoint = IEndpointConventionBuilder -> IEndpointConventionBuilder
 
@@ -53,10 +86,7 @@ module RoutingTypes =
 
 
 module RoutingInternal =
-    // This is a hack to prevent generating Func tag in open API
-    [<CompilerGenerated>]
-    type FakeFunc<'T> =
-        member this.Invoke() = Unchecked.defaultof<'T>
+
 
     type ApplyBefore =
         static member Compose(beforeHandler: EndpointHandler, endpoint: Endpoint) =
@@ -314,10 +344,20 @@ module Routers =
     let addMetadata (metadata: obj) =
         configureEndpoint _.WithMetadata(metadata)
 
-    let addOpenApi<'T> (config: OpenApiConfig) =
+    let addOpenApi (config: OpenApiConfig) =
+        configureEndpoint config.Build
+
+    let addOpenApiSimple<'Req, 'Res> =
+        let methodName =
+            if typeof<'Req> = typeof<unit> then
+                "InvokeUnit"
+            else
+                "Invoke"
         configureEndpoint
-            _.WithMetadata(typeof<FakeFunc<'T>>.GetMethod("Invoke"))
-             .WithOpenApi(config)
+            _.WithMetadata(typeof<FakeFunc<'Req, 'Res>>.GetMethod(methodName))
+             .WithOpenApi()
+
+
 
 type EndpointRouteBuilderExtensions() =
 

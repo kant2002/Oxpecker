@@ -15,6 +15,7 @@ open Microsoft.OpenApi.Writers
 open Oxpecker
 open Oxpecker.ViewEngine
 open type Microsoft.AspNetCore.Http.TypedResults
+open Microsoft.AspNetCore.Http.Metadata
 
 
 let summaries = [
@@ -29,9 +30,15 @@ type WeatherForecast = {
     member this.TemperatureF = 32 +  int (float this.TemperatureC / 0.5556)
 
 let endpoints = [
-    GET [
+    POST [
         route "/" (text "Hello World")
-            |> addOpenApi<string> (fun o -> o.OperationId <- "GetHelloWorld"; o)
+            |> addOpenApi (OpenApiConfig(
+                requestInfo = RequestInfo(typeof<WeatherForecast>),
+                responseInfo = ResponseInfo(typeof<string>),
+                configureOperation = (fun o -> o.OperationId <- "HelloWorld"; o)
+            ))
+    ]
+    GET [
         subRoute "/{city}" [
             routef "/weatherforecast/{%i}" (fun num ->
                 [| 1.. num |]
@@ -43,7 +50,7 @@ let endpoints = [
                  |> json
              )
             |> configureEndpoint _.WithName("GetWeatherForecast")
-            |> addOpenApi<WeatherForecast[]> id
+            |> addOpenApiSimple<unit, WeatherForecast[]>
         ]
     ]
 ]
@@ -88,6 +95,7 @@ let configureApp (appBuilder: IApplicationBuilder) =
         .Use(errorHandler)
         .UseOxpecker(endpoints)
         .UseSwagger()
+        .UseSwaggerUI()
         .Run(notFoundHandler)
 
 let configureServices (services: IServiceCollection) =

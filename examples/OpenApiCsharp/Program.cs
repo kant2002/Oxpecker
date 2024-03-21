@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.AspNetCore.Routing.Patterns;
@@ -22,7 +23,7 @@ var summaries = new[]
     "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
 };
 
-app.MapGet("/", () => "Hello World!")
+app.MapPost("/", (WeatherForecast w) => "Hello World!")
     .WithName("HelloWorld")
     .WithOpenApi();
 app.MapGroup("/{city}").MapGet("/weatherforecast/{num:int}", (int num) =>
